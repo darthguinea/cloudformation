@@ -1,0 +1,168 @@
+Description: DevOps Test
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  Environment:
+    Description: Environment to deploy
+    Type: String
+    Default: OpsTest
+    AllowedValues:
+      - OpsTest
+  PublicKey:
+    Description: Public SSH key
+    Type: String
+    Default: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQCu9AWbq2CXWdyY0FdF60tb/sCKR/f91mopJJTZelXGwVylxDyz0qSn/s/Qru7tjCsKYSPzrAAOehcUNMw3wOGZmoyxUHa8Hf3vWw6jUPgs5ijeXvYzaJAZZ9q48IUDDQysUcaSZ6lABKWG7VVsadxM+QEuX/aUZrMIe3Nl5FogtQ=="
+  AmiId:
+    Description: AMI ID of Image
+    Type: String
+    Default: ami-963cecf4
+  Password:
+    Description: "Password for Test User"
+    Type: String
+    Default: "t3stus3rblar"
+Mappings:
+  RegionMap:
+    ap-southeast-2:
+      "ImageId": "ami-963cecf4"
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 172.31.0.0/20
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+  VPCGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  SubnetA:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 172.31.1.0/24
+      MapPublicIpOnLaunch: true
+  SubnetB:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 172.31.2.0/24
+      MapPublicIpOnLaunch: false
+  SubnetC:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 172.31.3.0/24
+      MapPublicIpOnLaunch: false
+  SubnetAWeb:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 172.31.4.0/24
+      MapPublicIpOnLaunch: true
+  SubnetBWeb:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 172.31.5.0/24
+      MapPublicIpOnLaunch: true      
+  RouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+  InternetRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: InternetGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref RouteTable
+  SubnetARouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetA
+  SubnetBRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetB
+  SubnetCRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetC
+  SSHSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: SSH Group
+      GroupDescription: 'SSH traffic in, all traffic out.'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+  OpsTestUser:
+    Type: AWS::IAM::User
+    Properties:
+      LoginProfile:
+        Password: !Ref Password
+      UserName: 'OpsTestUser'
+  OpsTestGroup:
+    Type: AWS::IAM::Group        
+  OpsTestPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: OpsTestGroup
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action: ['cloudformation:Describe*', 'cloudformation:List*', 'cloudformation:Get*']
+          Resource: '*'
+      Groups: [!Ref OpsTestGroup]
+  Users:
+    Type: AWS::IAM::UserToGroupAddition
+    Properties:
+      GroupName: !Ref OpsTestGroup
+      Users: [!Ref OpsTestUser]
+  ELB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: 'OpsTestELB'
+      Type: network
+      Scheme: internal
+      Subnets: !Ref SubnetIds
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+  JumpBox:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      SubnetId: !Ref SubnetA
+      SecurityGroupIds:
+        - !Ref SSHSecurityGroup
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", ImageId]
+      InstanceType: "t2.medium"
+      KeyName: "hurried"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          sudo apt-get -y install python-setuptools
+          mkdir aws-cfn-bootstrap-latest
+          curl https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz | tar xz -C aws-cfn-bootstrap-latest --strip-components 1
+          sudo easy_install aws-cfn-bootstrap-latest
+          cfn-init -v --stack ${AWS::StackId} --resource JumpBox --configsets default --region ${AWS::Region}
+          cfn-signal -e $? --stack ${AWS::StackId} --resource JumpBox --region ${AWS::Region}
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - ssh_key_apply
+        ssh_key_apply:
+          commands:
+            sync:
+              command: !Sub |
+                echo "${PublicKey}" >> /home/ubuntu/.ssh/authorized_keys
